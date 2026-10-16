@@ -53,6 +53,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File bridge/start-local.ps1
 
 ## 本机验证记录（2026-10-16）
 
+### 常见故障与功能边界
+
+- 麦克风显示“未检测到麦克风”对应浏览器 `NotFoundError`。先在 Windows 设置 → 系统 → 声音 → 输入中确认存在可用麦克风，再允许网站访问；播放设备和立体声混音不能替代实际麦克风。
+- 含 emoji 的回复曾导致 Windows GBK 标准输出抛出异常并中断 TTS；桥接现为 Windows 标准输出/错误流配置 UTF-8，已用含 emoji 语句实际合成验证。
+- 待机动画是循环播放预录视频，不会按聊天文本做指定动作；说话口型需要另外部署 DUIX 服务、模型和头像素材。
+- DSH 默认标准模式是编码助手；要用作陪伴聊天，还需要配置角色提示和合适的工具权限。
+- 新浏览器没有 DSH 登录状态时，需要打开启动终端打印的带 token 地址，不能只打开裸地址。
+
 - Windows、Python 3.11.15、Node.js 22.22.0、RTX 3090；CUDA torch/torchaudio 2.8.0+cu128，Python 依赖一致性检查通过。
 - DSH 构建通过，网页使用 MiniMax-M3.1-Flash-Preview 完成真实对话。
 - FunASR GPU 识别公开测试音频通过，Silero WebSocket 返回 speech_start / speech_end。

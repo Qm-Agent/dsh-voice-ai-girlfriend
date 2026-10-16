@@ -40,6 +40,7 @@ function MicIcon() {
  */
 export const MicButton = memo(function MicButton({ t, sendText, speaker, interruptReply }: MicButtonProps) {
   const [phase, setPhase] = useState<Phase>('idle')
+  const [errorHint, setErrorHint] = useState('')
   // Recording state: true while the mic hears speech (driven by the recorder's
   // onSpeakingChange — flips only, no per-chunk re-renders).
   const [voiceActive, setVoiceActive] = useState(false)
@@ -105,6 +106,7 @@ export const MicButton = memo(function MicButton({ t, sendText, speaker, interru
     // AND swallow the rest of the current reply (its remaining sentences are
     // not spoken; the next reply speaks normally).
     interruptReply()
+    setErrorHint('')
 
     const recorder = new MicRecorder({
       minSilenceMs: 1800,
@@ -143,6 +145,14 @@ export const MicButton = memo(function MicButton({ t, sendText, speaker, interru
       await recorder.start()
     } catch (err) {
       console.error('[ui-voice] mic start failed:', err)
+      const name = err instanceof Error ? err.name : ''
+      setErrorHint(name === 'NotFoundError'
+        ? '未检测到麦克风，请连接录音设备并检查 Windows 声音输入'
+        : name === 'NotAllowedError'
+          ? '麦克风权限被拒绝，请允许浏览器和此网站使用麦克风'
+          : name === 'NotReadableError'
+            ? '无法读取麦克风，请检查设备是否被占用或禁用'
+            : '麦克风启动失败，请检查浏览器及录音设备')
       recorder.stop()
       recorderRef.current = null
       setVoiceActive(false)
@@ -156,7 +166,7 @@ export const MicButton = memo(function MicButton({ t, sendText, speaker, interru
   const statusTitle = phase === 'idle'
     ? '已关闭（灰）·点击开启聆听'
     : phase === 'error'
-      ? '不可用（红）·点击重试'
+      ? `${errorHint} · 点击重试`
       : phase === 'transcribing'
         ? '识别中（深绿）'
         : voiceActive ? '收音中（绿）' : '待命（蓝）'
@@ -179,6 +189,7 @@ export const MicButton = memo(function MicButton({ t, sendText, speaker, interru
           : 'var(--dsw-alias-label-dimmed)'
 
   return (
+    <>
     <span
       role="button"
       tabIndex={0}
@@ -207,5 +218,7 @@ export const MicButton = memo(function MicButton({ t, sendText, speaker, interru
       <MicIcon />
       <span className={css.waves} aria-hidden="true"><i /><i /><i /></span>
     </span>
+    {phase === 'error' && <span role="alert" style={{ fontSize: 12, color: 'var(--dsw-alias-state-error-primary)' }}>{errorHint}</span>}
+    </>
   )
 })

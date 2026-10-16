@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime
@@ -37,6 +38,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from uuid import uuid4
+
+# Rich in the speech handlers prints arbitrary model replies. Redirected
+# Windows streams otherwise use GBK and an emoji can break every TTS request.
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
 
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = HERE / "bridge-config.json"
