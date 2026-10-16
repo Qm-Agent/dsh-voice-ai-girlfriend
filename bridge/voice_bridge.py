@@ -1147,6 +1147,7 @@ async def _dh_run(item: dict) -> None:
         _dh_set(state="error", message="文本为空", code=code, text=text)
         return
     total = len(segments)
+    pending_synth: asyncio.Task | None = None
     try:
         _dh_set(
             state="tts", message="语音合成中…", code=code, text=text,
@@ -1154,7 +1155,6 @@ async def _dh_run(item: dict) -> None:
             done_segments=0, progress=0,
         )
         async with httpx.AsyncClient(timeout=20, trust_env=False) as client:
-            pending_synth: asyncio.Task | None = None
             for i, seg_text in enumerate(segments):
                 if code in _dh_discarded:
                     _dh_set(state="discarded", message="已取消（被打断）", progress=0, code=code, text=text, videos=[])
@@ -1172,8 +1172,8 @@ async def _dh_run(item: dict) -> None:
                     logger.info("DH %s: preempted by newer task at segment %d/%d", code, i, total)
                     return
                 _dh_set(
-                    state="generating",
-                    message=f"数字人生成中 {i + 1}/{total}…",
+                    state="tts",
+                    message=f"语音合成中 {i + 1}/{total}…",
                     code=code, text=text, done_segments=i,
                     progress=round(i / total * 100),
                 )
@@ -1184,15 +1184,13 @@ async def _dh_run(item: dict) -> None:
                 else:
                     wav_path = await _dh_synth_segment(seg_text)
                 # 预合成下一段（当前段在 DUIX 生成期间并行跑）
-                next_synth: asyncio.Task | None = None
                 if i + 1 < total:
-                    next_synth = asyncio.create_task(_dh_synth_segment(segments[i + 1]))
+                    pending_synth = asyncio.create_task(_dh_synth_segment(segments[i + 1]))
+                _dh_set(state="generating", message=f"口型生成中 {i + 1}/{total}…")
                 # 提交 + 轮询当前段，拿到成品文件名
                 seg_code = f"{code}-s{i}"
                 fname = await _dh_submit_and_wait(client, seg_code, wav_path, code, text)
                 if fname is None:
-                    if next_synth is not None:
-                        next_synth.cancel()
                     if code in _dh_discarded:
                         _dh_set(state="discarded", message="已取消（被打断）", progress=0, code=code, text=text, videos=[])
                     return  # 错误/超时状态已由 _dh_submit_and_wait 设置
@@ -1201,11 +1199,8 @@ async def _dh_run(item: dict) -> None:
                     videos = videos + [{"video_file": fname, "video_url": f"/media/dh/{fname}"}]
                     _dh_state["videos"] = videos
                 _dh_record_history(seg_code, fname, seg_text)
-                if next_synth is not None:
-                    try:
-                        await next_synth
-                    except Exception:  # noqa: BLE001
-                        logger.exception("DH %s: next synth failed", code)
+                # Publish the finished video immediately. The next iteration
+                # consumes pending_synth instead of synthesizing it a second time.
                 _dh_set(
                     state="generating",
                     message=f"数字人生成中 {i + 2}/{total}…",
@@ -1233,6 +1228,11 @@ async def _dh_run(item: dict) -> None:
             _dh_set(state="discarded", message="已取消（被打断）", progress=0, code=code, text=text, videos=[])
         else:
             _dh_set(state="error", message=f"任务异常: {type(exc).__name__}", code=code, text=text)
+    finally:
+        if pending_synth is not None:
+            # Threaded GPU inference cannot be cancelled safely: keep its lock
+            # until it finishes, and consume errors even when the reply stops.
+            await asyncio.gather(pending_synth, return_exceptions=True)
 
 
 async def _dh_synth_segment(seg_text: str) -> Path:

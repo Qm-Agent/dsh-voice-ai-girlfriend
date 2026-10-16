@@ -46,6 +46,16 @@ DSH 使用本项目独立的 `.local/dsh-home`。`settings.yaml` 中的 `llm-pi-
 
 部署方式参考 [DUIX 官方精简 Compose](https://github.com/duixcom/Duix-Avatar/blob/main/deploy/docker-compose-lite.yml)。
 
+### 延迟与重复合成修复
+
+上游已有分段口型和预合成流水线。本副本修复了预合成任务未被下一段复用的问题，首段视频也不再等待后续语音完成才发布。浏览器通过 Web Locks 与 BroadcastChannel 选出唯一输出页面，最近操作的页面优先；数字人开关跨页同步，普通朗读队列在执行前重新检查模式，防止两个会话页面分别发出 TTS 和数字人请求。
+
+本机 Qwen3 使用 `attn_implementation: sdpa`、`parity_mode: false` 启用 CUDA Graph；先前兼容模式禁用了该加速。相同短句热启动合成从 5.36 秒降至 1.34–1.51 秒，合成音频回送 STT 内容正确。此值是本机两次测量，不是固定延迟承诺。DUIX 查询间隔为 0.5 秒，网页视频轮询为 1 秒。
+
+双页面实测同一回复只有一次 `/api/dh/speak`、没有额外 `/api/tts`，仅当前操作页面播放。接近原先测试的“小星星”回复，入队到视频就绪从约 31.35 秒降到 15.66 秒（生成音频长度分别约 4.67 秒和 5.60 秒，存在采样差异），不包含模型文字回复耗时。保留 1024×1024 画质；仍需先完成分段视频再播放，不能等同实时口型流。
+
+流水线回归测试：`.venv\Scripts\python.exe bridge/test_dh_pipeline.py`，覆盖三段各合成一次、预合成与当前段渲染重叠、首段提前发布及失败时收尾。
+
 在本仓库根目录执行：
 
 ```powershell

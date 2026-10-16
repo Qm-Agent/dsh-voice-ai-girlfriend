@@ -27,6 +27,7 @@ import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots
 // Type-only: pulls ui-conversation's SlotMap merge for PropsRuntime resolution.
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { bridgeBase, dhStatus, dhDiscard, tts, readVoiceEnabled, type DhStatus } from '../bridge.ts'
+import { ownsVoiceOutput, useVoiceOutputOwner } from './output-owner.ts'
 import { readDigitalHuman } from '../DigitalHumanToggle.tsx'
 import type { VoiceInjected } from '../contract.ts'
 import css from './CompanionWindow.module.css'
@@ -229,6 +230,7 @@ function dhSegText(dh: DhStatus): string {
  * @param props - framework runtime + locale + injected speaker face.
  */
 export const CompanionWindow = memo(function CompanionWindow({ speaker, companion }: CompanionWindowProps) {
+  useVoiceOutputOwner()
   const [visible, setVisible] = useState<boolean>(companion.visible)
   const [widthPx, setWidthPx] = useState<number>(readWidth)
   const [pos, setPos] = useState<{ x: number; y: number } | null>(readPos)
@@ -501,7 +503,7 @@ export const CompanionWindow = memo(function CompanionWindow({ speaker, companio
     if (dhPlaying) hideTaskFrame()
   }, [dhPlaying, hideTaskFrame])
 
-  // Digital human: poll the bridge task state every 4 s and drive playback.
+  // One-second polling avoids adding up to four seconds after video completion.
   useEffect(() => {
     let cancelled = false
     const poll = async () => {
@@ -520,7 +522,7 @@ export const CompanionWindow = memo(function CompanionWindow({ speaker, companio
       driveDh(status)
     }
     void poll()
-    const timer = window.setInterval(poll, 4000)
+    const timer = window.setInterval(poll, 1000)
     return () => {
       cancelled = true
       window.clearInterval(timer)
@@ -578,6 +580,13 @@ export const CompanionWindow = memo(function CompanionWindow({ speaker, companio
       handledDhRef.current.delete(code)
       stopDh()
     }
+    if (!ownsVoiceOutput()) {
+      if (dhPlayingRef.current) stopDh()
+      if (status.state === 'done' || status.state === 'error' || status.state === 'discarded') {
+        handledDhRef.current.add(code)
+      }
+      return
+    }
     if (handledDhRef.current.has(code)) return
     if (status.state === 'discarded') {
       handledDhRef.current.add(code)
@@ -593,7 +602,7 @@ export const CompanionWindow = memo(function CompanionWindow({ speaker, companio
       stopDh()
       if (status.text) {
         void tts(status.text)
-          .then(wav => speaker.speak(wav))
+          .then(wav => { if (ownsVoiceOutput()) speaker.speak(wav) })
           .catch(err => console.error('[ui-voice] DH fallback TTS failed:', err))
       }
       return
@@ -611,7 +620,7 @@ export const CompanionWindow = memo(function CompanionWindow({ speaker, companio
         stopDh()
         if (status.text) {
           void tts(status.text)
-            .then(wav => speaker.speak(wav))
+            .then(wav => { if (ownsVoiceOutput()) speaker.speak(wav) })
             .catch(err => console.error('[ui-voice] DH timeout TTS failed:', err))
         }
         return

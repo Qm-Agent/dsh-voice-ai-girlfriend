@@ -27,6 +27,7 @@ import type { VoiceInjected } from '../contract.ts'
 import { cleanReplyText } from './clean.ts'
 import { splitSentences } from './sentences.ts'
 import { chatNodes } from './chat-nodes.ts'
+import { ownsVoiceOutput, useVoiceOutputOwner } from './output-owner.ts'
 
 const VOICE_ENABLED_KEY = 's2s.voice.enabled'
 
@@ -72,6 +73,7 @@ export const ReplySpeakerMount = memo(function ReplySpeakerMount({
   useSession,
   useChat,
   speaker,
+  abortTts,
   _registerTtsAbort,
   _registerInterruptHandler,
 }: ReplySpeakerMountProps) {
@@ -80,6 +82,7 @@ export const ReplySpeakerMount = memo(function ReplySpeakerMount({
   // chatNodes helper; the rc.8 `snapshot.chat.nodes` map is gone.
   const chat = useChat((s: never) => s)
   const snapshot = useSession(s => s)
+  const outputOwner = useVoiceOutputOwner()
 
   // Per-node complete sentences already spoken (node.key -> count).
   const spokenRef = useRef(new Map<string, number>())
@@ -142,8 +145,8 @@ export const ReplySpeakerMount = memo(function ReplySpeakerMount({
   // Track the BRIDGE-side digital-human switch (it can change at runtime): poll
   // it on mount, and re-read it whenever the local toggle announces a change
   // (the plugin POSTs /api/dh/enable first, so the bridge is already updated by
-  // the time we look). Bridge unreachable -> false, i.e. replies still speak
-  // through sentence TTS.
+  // the time we look). When digital-human mode is selected, an unavailable
+  // bridge must not silently start a competing sentence-TTS request.
   useEffect(() => {
     let cancelled = false
     const check = (): void => {
@@ -154,9 +157,13 @@ export const ReplySpeakerMount = memo(function ReplySpeakerMount({
     check()
     const onChange = (): void => { window.setTimeout(check, 200) }
     window.addEventListener(DH_CHANGE_EVENT, onChange)
+    window.addEventListener('storage', onChange)
+    document.addEventListener('visibilitychange', onChange)
     return () => {
       cancelled = true
       window.removeEventListener(DH_CHANGE_EVENT, onChange)
+      window.removeEventListener('storage', onChange)
+      document.removeEventListener('visibilitychange', onChange)
     }
   }, [])
 
@@ -165,13 +172,26 @@ export const ReplySpeakerMount = memo(function ReplySpeakerMount({
   // bridge, which renders a lip-synced video (with the TTS audio embedded);
   // the companion window plays video + sound together once it is ready.
   useEffect(() => {
+    if (!outputOwner || !ownsVoiceOutput()) {
+      // Inactive tabs observe history but must never synthesize it on return.
+      let last = 0
+      for (const node of chatNodes(chat)) last = Math.max(last, node.anchorSeq)
+      if (last > 0) {
+        baselineRef.current = last
+        skipUntilRef.current = last
+      }
+      speaker.stop()
+      abortTts()
+      return
+    }
     if (!voiceEnabled()) return
 
-    // 桥接开关尚未确认：先不朗读也不提交视频，等 dhStatus 返回（桥接不可达时
-    // 按非 DH 处理，回复仍会 TTS 朗读）。确认后 setBridgeDh 触发重渲染，等待
-    // 窗口期到达的回复会按正确的 dhMode 处理。
+    // 等待桥接开关确认；数字人模式下不自动切换到普通 TTS，避免重复合成。
     if (bridgeDh === null) return
-    const dhMode = bridgeDh && companionVisible() && readDigitalHuman()
+    const dhMode = companionVisible() && readDigitalHuman()
+    // A stale bridge status must not route the same reply through plain TTS
+    // while another component is already submitting its digital-human task.
+    if (dhMode && !bridgeDh) return
 
     // Barge-in swallowed the CURRENT reply: remember its exact anchor so only
     // that reply's remaining sentences are skipped; replies that appear
@@ -327,12 +347,12 @@ export const ReplySpeakerMount = memo(function ReplySpeakerMount({
     // the rest of the chain.
     chainRef.current = jobs.reduce(
       (chain, job) => chain.then(() => {
-        if (interruptRef.current || !voiceEnabled()) return
+        if (interruptRef.current || !voiceEnabled() || !ownsVoiceOutput() || (readDigitalHuman() && companionVisible())) return
         const controller = new AbortController()
         _registerTtsAbort(controller)
         return tts(job.sentence, controller.signal)
           .then((wav) => {
-            if (interruptRef.current || !voiceEnabled()) return
+            if (interruptRef.current || !voiceEnabled() || !ownsVoiceOutput() || (readDigitalHuman() && companionVisible())) return
             speaker.speak(wav)
           })
           .catch((err) => {
@@ -344,7 +364,7 @@ export const ReplySpeakerMount = memo(function ReplySpeakerMount({
       }),
       chainRef.current,
     )
-  }, [chat, speaker, _registerTtsAbort, bridgeDh])
+  }, [chat, speaker, abortTts, _registerTtsAbort, bridgeDh, outputOwner])
 
   return null
 })

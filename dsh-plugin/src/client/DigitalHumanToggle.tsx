@@ -47,6 +47,12 @@ export const DigitalHumanToggle = memo(function DigitalHumanToggle({ t }: Digita
   // the two sides disagreeing (e.g. bridge left ON while this switch is OFF).
   useEffect(() => {
     void dhEnable(readDigitalHuman()).then(() => notifyDhChanged())
+    const sync = () => {
+      setOn(readDigitalHuman())
+      notifyDhChanged()
+    }
+    window.addEventListener('storage', sync)
+    return () => window.removeEventListener('storage', sync)
   }, [])
 
   // 生成中 → 按钮周期性绿光：轮询桥接状态（4s，与 companion 同频），只要
