@@ -1,0 +1,8 @@
+# Install matching CUDA wheels first (RTX 3090 deployment):
+# uv pip install --python .venv/Scripts/python.exe torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+# Then install this file. These pins avoid the MimiConfig.rope_theta error
+# observed with transformers 5.20.1 and qwen-tts-hf 0.1.1.post1.
+-r requirements.txt
+transformers==5.15.1
+faster-qwen3-tts==0.5.4
+qwen-tts-hf==0.1.1.post1

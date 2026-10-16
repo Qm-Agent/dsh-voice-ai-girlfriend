@@ -17,7 +17,7 @@
 
 ## 环境与配置
 
-Python 环境位于 `.venv`。先安装 `bridge/requirements.txt`，再安装匹配的 CUDA 版 torch/torchaudio；不要仅凭 `pip install` 成功判断 GPU 可用。用以下命令检查：
+Python 环境位于 `.venv`。安装 `bridge/requirements-windows.txt`，并安装匹配的 CUDA 版 torch/torchaudio（本机使用 `2.8.0+cu128`）。Windows 依赖文件固定了 Qwen 兼容版本，避免 Transformers `5.20.1` 引发的 `MimiConfig.rope_theta` 错误。更改依赖前先停止桥接，以免 Windows 锁住已加载的 DLL。不要仅凭 `pip install` 成功判断 GPU 可用。用以下命令检查：
 
 ```powershell
 .venv\Scripts\python.exe -c "import torch; print(torch.__version__, torch.cuda.is_available())"
@@ -46,7 +46,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File bridge/start-local.ps1
 .venv\Scripts\python.exe bridge/verify-local.py
 
 # 实际语音识别和合成；首次调用需要加载模型
-.venv\Scripts\python.exe bridge/verify-local.py --audio models/funasr/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch/asr_example.wav --text "你好，本地语音测试。" --output tts_out.wav
+.venv\Scripts\python.exe bridge/verify-local.py --audio models/funasr/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch/example/asr_example.wav --text "你好，本地语音测试。" --output tts_out.wav
 ```
 
 `/api/health` 返回 `status: ok` 只表示 HTTP 服务运行。必须分别完成真实 STT、TTS 请求与浏览器对话，才能判断整条链路通过；麦克风及扬声器还需要在用户浏览器中实际试听确认。
+
+## 本机验证记录（2026-10-16）
+
+- Windows、Python 3.11.15、Node.js 22.22.0、RTX 3090；CUDA torch/torchaudio 2.8.0+cu128，Python 依赖一致性检查通过。
+- DSH 构建通过，网页使用 MiniMax-M3.1-Flash-Preview 完成真实对话。
+- FunASR GPU 识别公开测试音频通过，Silero WebSocket 返回 speech_start / speech_end。
+- Qwen3-TTS 合成“你好，本地语音测试。”，再送回 STT，识别为“你好本地语音测试”。
+- 网页回复“你好，语音功能已经准备好了。”触发 `/api/tts`，返回 HTTP 200、2.78 秒 WAV，完成网页到本地合成的联动。
+- 待机动画可见；DUIX 实时口型和 QQ 推送未启用。当前音色使用公开测试音频作为参考；真实麦克风采集和扬声器听感仍需用户确认。
