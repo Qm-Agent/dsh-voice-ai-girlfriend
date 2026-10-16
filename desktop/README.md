@@ -27,7 +27,7 @@
 
 ## QQ 与直播扩展
 
-QQ 已有双向实现：NapCat / OneBot v11 → bridge WebSocket → 当前 DSH 会话 → 模型回复 → 文本 / TTS 语音回推；另有图片发送接口。需要配置本机 NapCat、登录机器人 QQ、目标 QQ 和本地 token，然后启用 `bridge-config.json` 的 qq 配置。当前未配置，不会发送 QQ 消息。原仓库的 `start-napcat.cmd` 含作者机器路径且会关闭 QQ，不能直接用于本机。
+QQ 已有双向实现：NapCat / OneBot v11 → bridge WebSocket → 当前 DSH 会话 → 模型回复 → 文本 / TTS 语音回推；另有图片发送接口。需要配置本机 NapCat、登录机器人 QQ、目标 QQ 和本地 token，然后启用 `bridge-config.json` 的 qq 配置。部署与双向语音测试见 [QQ_SETUP.md](../docs/QQ_SETUP.md)；未确认账号前保持关闭，不会发送 QQ 消息。原仓库的 `start-napcat.cmd` 含作者机器路径且会关闭 QQ，不能直接用于本机。
 
 抖音尚未接入。官方直播互动工具可提供评论、点赞、礼物等事件，需完成相应应用接入、审核和主播授权；这不是一个任意直播间 URL 就能使用的公共弹幕接口。
 

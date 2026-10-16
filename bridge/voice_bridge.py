@@ -1785,9 +1785,9 @@ async def qq_send(req: QQSendRequest) -> dict:
                 else:
                     handler = None  # OmniVoice 引擎不需要 Qwen3 handler
                 samples = await asyncio.to_thread(_synthesize, handler, text, cancel)
-            result = send_voice(base, token, user_id, samples.astype("<i2").tobytes())
+            result = await asyncio.to_thread(send_voice, base, token, user_id, samples.astype("<i2").tobytes())
         else:
-            result = send_text(base, token, user_id, req.text.strip()[:2000])
+            result = await asyncio.to_thread(send_text, base, token, user_id, req.text.strip()[:2000])
         return {"ok": True, "user_id": user_id, "napcat": result}
     except HTTPException:
         raise
@@ -1796,116 +1796,191 @@ async def qq_send(req: QQSendRequest) -> dict:
         raise HTTPException(status_code=502, detail=f"QQ send failed: {exc}") from exc
 
 
-# ── QQ 双向：事件接收 + 插件 WS 桥 ────────────────────────────────────────
-#
-# NapCat 把消息事件 POST 到 /api/qq/event（HTTP 上报 postUrls）；桥接再把
-# 私聊文本推给已连接的浏览器插件（/api/qq/ws）。插件注入 DSH，回复完成后
-# 把回复文本发回桥接（WS {"type":"reply"}），桥接 TTS→silk→QQ 发出。
-# 单连接设计（个人使用）：新连接顶掉旧连接。
+# ── QQ inbound queue and single conversation ownership ──────────────────
+from qq_inbound import allowed_message as _qq_allowed, segments as _qq_segments, record_wav as _qq_record_wav
 
 _qq_ws_conn: WebSocket | None = None
-_qq_ws_lock = asyncio.Lock()
+_qq_ws_role = ''
+_qq_queue = asyncio.Queue(maxsize=20)
+_qq_seen: dict[str, float] = {}
+_qq_active: dict | None = None
+_qq_reply_future = None
+_qq_service_tasks = []
+_qq_stats = {'received': 0, 'voice_received': 0, 'replied': 0, 'failed': 0, 'last_error': '', 'onebot_connected': False}
 
+@app.get('/api/qq/status')
+async def qq_status():
+    return {'enabled': bool(CONFIG.get('qq', {}).get('enabled')), 'client_connected': _qq_ws_conn is not None,
+            'client_role': _qq_ws_role, 'pending': _qq_queue.qsize(), 'busy': _qq_active is not None,
+            **_qq_stats}
 
-async def _qq_push(json_msg: dict) -> None:
-    global _qq_ws_conn
-    async with _qq_ws_lock:
-        conn = _qq_ws_conn
-    if conn is not None:
+async def _qq_accept_event(body):
+    qq = CONFIG.get('qq', {})
+    if not _qq_allowed(body, qq):
+        return False
+    mid = str(body.get('message_id') or '')
+    if not mid:
+        return False
+    key = f"{body.get('self_id')}:{mid}"
+    if key in _qq_seen or _qq_queue.full():
+        return False
+    _qq_seen[key] = time.monotonic()
+    while len(_qq_seen) > 1000:
+        _qq_seen.pop(next(iter(_qq_seen)))
+    _qq_queue.put_nowait(body)
+    _qq_stats['received'] += 1
+    return True
+
+async def _qq_message_text(body):
+    parts = []
+    for seg in _qq_segments(body):
+        if seg['type'] == 'text':
+            parts.append(str(seg['data'].get('text', '')))
+        elif seg['type'] == 'record':
+            file_id = str(seg['data'].get('file') or '')
+            if not file_id:
+                raise ValueError('Voice message has no file identifier')
+            wav = await asyncio.to_thread(_qq_record_wav, CONFIG['qq'], file_id)
+            audio = await asyncio.to_thread(decode_audio, wav, 'audio/wav')
+            if len(audio) > 16000 * 60:
+                raise ValueError('QQ voice message exceeds 60 seconds')
+            async with models.infer_lock:
+                handler = await models.ensure_stt()
+                transcript, _ = await asyncio.to_thread(_transcribe, handler, audio)
+            if not transcript.strip():
+                raise ValueError('No speech recognized in QQ voice message')
+            parts.append(transcript.strip())
+            _qq_stats['voice_received'] += 1
+    return '\n'.join(p for p in parts if p.strip()).strip()[:2000]
+
+async def _qq_worker():
+    global _qq_active, _qq_reply_future
+    while True:
+        body = await _qq_queue.get()
         try:
-            await conn.send_json(json_msg)
+            text = await _qq_message_text(body)
+            if not text:
+                continue
+            # Wait for a desktop/browser conversation, retaining the message.
+            for _ in range(120):
+                if _qq_ws_conn is not None:
+                    break
+                await asyncio.sleep(1)
+            if _qq_ws_conn is None:
+                raise RuntimeError('No companion conversation connected')
+            _qq_active = {'type': 'qq_message', 'request_id': str(uuid4()), 'text': text}
+            _qq_reply_future = asyncio.get_running_loop().create_future()
+            await _qq_ws_conn.send_json(_qq_active)
+            reply = await asyncio.wait_for(_qq_reply_future, timeout=180)
+            await qq_send(QQSendRequest(text=reply, voice=False))
+            await qq_send(QQSendRequest(text=reply, voice=True))
+            _qq_stats['replied'] += 1
+            _qq_stats['last_error'] = ''
+        except Exception as exc:
+            _qq_stats['failed'] += 1
+            _qq_stats['last_error'] = str(exc)[:200] or type(exc).__name__
+            logger.exception('QQ message processing failed')
+        finally:
+            _qq_active = None
+            _qq_reply_future = None
+            _qq_queue.task_done()
+
+async def _qq_listen():
+    from websockets.asyncio.client import connect
+    qq = CONFIG['qq']
+    while True:
+        try:
+            async with connect(qq['napcat_ws'], additional_headers={'Authorization': 'Bearer ' + qq.get('napcat_token', '')},
+                               proxy=None, max_size=2**20, open_timeout=5) as conn:
+                _qq_stats['onebot_connected'] = True
+                async for raw in conn:
+                    try:
+                        event = json.loads(raw)
+                        if isinstance(event, dict):
+                            await _qq_accept_event(event)
+                    except (ValueError, TypeError):
+                        logger.warning('Ignored malformed OneBot event')
         except Exception:
-            logger.debug("QQ ws push failed (client gone)", exc_info=True)
+            _qq_stats['onebot_connected'] = False
+        await asyncio.sleep(3)
 
+@app.on_event('startup')
+async def _qq_startup():
+    if CONFIG.get('qq', {}).get('enabled'):
+        _qq_service_tasks.append(asyncio.create_task(_qq_worker()))
+        if CONFIG['qq'].get('napcat_ws'):
+            _qq_service_tasks.append(asyncio.create_task(_qq_listen()))
 
-@app.post("/api/qq/event")
-async def qq_event(body: dict) -> dict:
-    """OneBot v11 HTTP 上报入口（NapCat postUrls）。私聊文本消息 → 推给插件。"""
-    try:
-        post_type = body.get("post_type")
-        if post_type == "message" and body.get("message_type") == "private":
-            user_id = body.get("user_id")
-            text = str(body.get("raw_message") or body.get("message") or "").strip()
-            if user_id and text:
-                await _qq_push({"type": "qq_message", "user_id": user_id, "text": text})
-                logger.info("QQ event: %s -> %s", user_id, text[:40])
-    except Exception:  # noqa: BLE001 - never break the upstream event feed
-        logger.exception("QQ event handling failed")
-    return {"ok": True}
+@app.on_event('shutdown')
+async def _qq_shutdown():
+    for task in _qq_service_tasks:
+        task.cancel()
+    await asyncio.gather(*_qq_service_tasks, return_exceptions=True)
+    _qq_service_tasks.clear()
 
+# Legacy push endpoints use the same allow-list, parsing and event deduplication.
+@app.post('/api/qq/event')
+async def qq_event(request: Request, body: dict):
+    import secrets
+    expected = CONFIG.get('qq', {}).get('napcat_token', '')
+    if not expected or not secrets.compare_digest(request.headers.get('authorization', ''), 'Bearer ' + expected):
+        raise HTTPException(status_code=401, detail='Invalid OneBot token')
+    return {'ok': True, 'accepted': await _qq_accept_event(body)}
 
-@app.websocket("/api/qq/onebot")
-async def qq_onebot_ws(ws: WebSocket) -> None:
-    """NapCat WebSocket 客户端连到这里（OneBot 事件推送）。
-
-    在 NapCat WebUI 网络配置里添加一个「WebSocket 客户端」指向
-    ws://127.0.0.1:8765/api/qq/onebot，NapCat 会把全部事件推过来；
-    私聊文本消息同样经 _qq_push 转给浏览器插件。这绕开了 HTTP 3000
-    服务不稳定时的事件上报缺口。
-    """
+@app.websocket('/api/qq/onebot')
+async def qq_onebot_ws(ws: WebSocket):
+    import secrets
+    token = CONFIG.get('qq', {}).get('napcat_token', '')
+    if not token or not secrets.compare_digest(ws.headers.get('authorization', ''), 'Bearer ' + token):
+        await ws.close(code=1008)
+        return
     await ws.accept()
     try:
         while True:
-            raw = await ws.receive_text()
-            if not raw.strip():
-                continue
-            try:
-                body = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            post_type = body.get("post_type")
-            if post_type == "message" and body.get("message_type") == "private":
-                user_id = body.get("user_id")
-                text = str(body.get("raw_message") or body.get("message") or "").strip()
-                if user_id and text:
-                    await _qq_push({"type": "qq_message", "user_id": user_id, "text": text})
-                    logger.info("QQ event(ws): %s -> %s", user_id, text[:40])
+            body = await ws.receive_json()
+            if isinstance(body, dict):
+                await _qq_accept_event(body)
     except WebSocketDisconnect:
         pass
-    except Exception:
-        logger.exception("QQ onebot ws error")
 
-
-@app.websocket("/api/qq/ws")
-async def qq_ws(ws: WebSocket) -> None:
-    """插件桥连接：桥接 → 插件(qq_message)，插件 → 桥接(reply → 发 QQ)。"""
-    global _qq_ws_conn
+@app.websocket('/api/qq/ws')
+async def qq_ws(ws: WebSocket):
+    global _qq_ws_conn, _qq_ws_role
+    if not CONFIG.get('qq', {}).get('enabled'):
+        await ws.close(code=1008)
+        return
+    origin = ws.headers.get('origin')
+    if origin and origin not in CONFIG.get('cors_origins', ['http://127.0.0.1:3080']):
+        await ws.close(code=1008)
+        return
+    role = 'desktop' if ws.query_params.get('role') == 'desktop' else 'browser'
     await ws.accept()
-    async with _qq_ws_lock:
+    # Keep the existing owner; a desktop can replace a browser only while idle.
+    if _qq_ws_conn is not None:
+        if role != 'desktop' or _qq_ws_role == 'desktop' or _qq_active is not None:
+            await ws.close(code=1013)
+            return
         old = _qq_ws_conn
-        _qq_ws_conn = ws
-    if old is not None:
-        try:
-            await old.close()
-        except Exception:
-            pass
+        _qq_ws_conn = None
+        await old.close()
+    _qq_ws_conn, _qq_ws_role = ws, role
     try:
         while True:
             raw = await ws.receive_json()
-            if not isinstance(raw, dict):
-                continue
-            if raw.get("type") == "reply":
-                text = str(raw.get("text") or "").strip()
-                if text:
-                    qq = CONFIG.get("qq", {})
-                    if qq.get("enabled"):
-                        try:
-                            # 先发原始文本，再发 TTS 语音（复用 /api/qq/send 逻辑）
-                            resp_text = await qq_send(QQSendRequest(text=text, voice=False))
-                            resp_voice = await qq_send(QQSendRequest(text=text, voice=True))
-                            await ws.send_json({"type": "sent", "ok": True, "text": resp_text, "voice": resp_voice})
-                        except HTTPException as exc:
-                            await ws.send_json({"type": "sent", "ok": False, "detail": exc.detail})
-                    else:
-                        await ws.send_json({"type": "sent", "ok": False, "detail": "QQ push disabled"})
+            if (_qq_ws_conn is ws and _qq_active and isinstance(raw, dict)
+                    and raw.get('request_id') == _qq_active['request_id']
+                    and _qq_reply_future and not _qq_reply_future.done()):
+                if raw.get('type') == 'reply' and str(raw.get('text') or '').strip():
+                    _qq_reply_future.set_result(str(raw['text']).strip()[:2000])
+                elif raw.get('type') == 'error':
+                    _qq_reply_future.set_exception(RuntimeError(str(raw.get('message', 'Client error'))[:200]))
     except WebSocketDisconnect:
         pass
-    except Exception:
-        logger.exception("QQ ws error")
     finally:
-        async with _qq_ws_lock:
-            if _qq_ws_conn is ws:
-                _qq_ws_conn = None
+        if _qq_ws_conn is ws:
+            _qq_ws_conn, _qq_ws_role = None, ''
+            if _qq_reply_future and not _qq_reply_future.done():
+                _qq_reply_future.set_exception(RuntimeError('QQ conversation disconnected'))
 
 
 # ── Silero VAD endpoint (barge-in detection) ──────────────────────────────

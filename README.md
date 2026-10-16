@@ -48,6 +48,10 @@
 └───────────────┘ └──────────────────────────┘
 ```
 
+## 本地 QQ 双向语音接入（本分支增强）
+
+支持 QQ 语音转文字、文字和语音回复、收件人白名单、消息去重与桌面会话优先。配置与测试见 [docs/QQ_SETUP.md](docs/QQ_SETUP.md)。
+
 ## 本地桌面陪伴窗（本分支新增）
 
 双击 `desktop/start-desktop.cmd` 启动独立窗口，复用现有 DSH、MiniMax 和语音/DUIX 服务。支持置顶、原生拖动缩放、关闭收进托盘，以及 `Ctrl+Alt+Space` 呼出聊天。安装、启动与验证见 [desktop/README.md](desktop/README.md)。

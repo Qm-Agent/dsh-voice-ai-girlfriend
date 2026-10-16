@@ -10,3 +10,6 @@ scipy
 funasr
 modelscope
 pilk
+
+# OneBot forward WebSocket client (proxy=None API requires 15+)
+websockets>=15,<18

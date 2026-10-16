@@ -1,0 +1,13 @@
+services:
+  napcat:
+    image: mlikiowa/napcat-docker@sha256:f611790ecffa23c3c182017d5cf68179dc24612403608cd835ad13d79642f1bd
+    container_name: dsh-napcat
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:6099:6099'
+      - '127.0.0.1:3000:3000'
+      - '127.0.0.1:3001:3001'
+    volumes:
+      - ../.local/napcat/qq:/app/.config/QQ
+      - ../.local/napcat/config:/app/napcat/config
+      - ../.local/napcat/plugins:/app/napcat/plugins

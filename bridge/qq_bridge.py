@@ -39,7 +39,7 @@ def _call(base: str, token: str, action: str, payload: dict) -> dict:
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=30) as resp:
         result = json.loads(resp.read().decode("utf-8"))
     if result.get("status") != "ok":
         raise QQPushError(f"NapCat {action} failed: {result.get('message') or result.get('wording')}")
@@ -65,7 +65,7 @@ def send_voice(base: str, token: str, user_id: int, pcm16: bytes) -> dict:
         silk_path = Path(tmp) / "voice.silk"
         _write_wav(wav_path, audio)
         pilk.encode(str(wav_path), str(silk_path), pcm_rate=16000, tencent=True)
-        file_arg = str(silk_path)  # NapCat 读本地绝对路径
+        file_arg = "base64://" + __import__("base64").b64encode(silk_path.read_bytes()).decode("ascii")  # Works across Windows / Docker boundaries
         message = [{"type": "record", "data": {"file": file_arg}}]
         return _call(base, token, "send_private_msg", {"user_id": user_id, "message": message})
 
