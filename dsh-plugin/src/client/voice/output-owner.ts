@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { bridgeBase } from '../bridge.ts'
 
 // A browser origin has one voice output owner, even with several chat tabs.
 // Components in the same tab share this coordinator and the same Web Lock.
@@ -8,6 +9,19 @@ let release: (() => void) | undefined
 const listeners = new Set<(value: boolean) => void>()
 let channel: BroadcastChannel | undefined
 let yieldUntil = 0
+let desktopActive = false
+let checkingDesktop = false
+const isDesktop = navigator.userAgent.includes('DSHDesktop/')
+async function checkDesktop(): Promise<void> {
+  if (isDesktop || checkingDesktop) return
+  checkingDesktop = true
+  try {
+    const r = await fetch(`${bridgeBase()}/api/desktop/lease`, { signal: AbortSignal.timeout(1500) })
+    desktopActive = r.ok && (await r.json()).active === true
+  } catch { desktopActive = false }
+  finally { checkingDesktop = false }
+  if (desktopActive) { release?.(); publish(false) }
+}
 
 function preferThisTab(): void {
   yieldUntil = 0
@@ -16,7 +30,7 @@ function preferThisTab(): void {
 }
 
 export function ownsVoiceOutput(): boolean {
-  return owned && document.visibilityState === 'visible'
+  return owned && !desktopActive && document.visibilityState === 'visible'
 }
 
 function publish(value: boolean): void {
@@ -25,7 +39,7 @@ function publish(value: boolean): void {
 }
 
 function acquire(): void {
-  if (document.visibilityState !== 'visible') {
+  if (desktopActive || document.visibilityState !== 'visible') {
     release?.()
     publish(false)
     return
@@ -62,7 +76,8 @@ export function useVoiceOutputOwner(): boolean {
     }
     listeners.add(setValue)
     acquire()
-    const timer = window.setInterval(acquire, 500)
+    void checkDesktop()
+    const timer = window.setInterval(() => { void checkDesktop(); acquire() }, 500)
     document.addEventListener('visibilitychange', acquire)
     window.addEventListener('focus', preferThisTab)
     window.addEventListener('pointerdown', preferThisTab)

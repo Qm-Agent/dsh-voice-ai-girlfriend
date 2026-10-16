@@ -920,6 +920,24 @@ def _dh_has_newer_pending() -> bool:
         return any(not t["started"] for t in _dh_queue)
 
 
+# A short desktop lease also coordinates independent Chromium profiles.
+# Expiry restores browser playback after a desktop crash.
+_desktop_lease_until = 0.0
+
+class DesktopLeaseRequest(BaseModel):
+    active: bool
+
+@app.post("/api/desktop/lease")
+async def desktop_lease(req: DesktopLeaseRequest) -> dict:
+    global _desktop_lease_until
+    _desktop_lease_until = time.monotonic() + 6 if req.active else 0.0
+    return {"active": req.active}
+
+@app.get("/api/desktop/lease")
+async def desktop_lease_status() -> dict:
+    return {"active": time.monotonic() < _desktop_lease_until}
+
+
 class DHSpeakRequest(BaseModel):
     text: str
 

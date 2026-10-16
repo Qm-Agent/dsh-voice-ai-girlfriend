@@ -776,6 +776,7 @@ export const CompanionWindow = memo(function CompanionWindow({ speaker, companio
   return (
     <div
       className={css.card}
+      data-desktop-companion="true"
       style={{
         position: 'fixed',
         left: `${cardPos.x}px`,

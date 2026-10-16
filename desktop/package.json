@@ -1,0 +1,15 @@
+{
+  "name": "dsh-desktop-companion",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local desktop companion for DSH voice services",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "electron . --self-test",
+    "postinstall": "node node_modules/electron/install.js"
+  },
+  "devDependencies": {
+    "electron": "44.8.0"
+  }
+}

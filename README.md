@@ -48,6 +48,11 @@
 └───────────────┘ └──────────────────────────┘
 ```
 
+## 本地桌面陪伴窗（本分支新增）
+
+双击 `desktop/start-desktop.cmd` 启动独立窗口，复用现有 DSH、MiniMax 和语音/DUIX 服务。支持置顶、原生拖动缩放、关闭收进托盘，以及 `Ctrl+Alt+Space` 呼出聊天。安装、启动与验证见 [desktop/README.md](desktop/README.md)。
+
+
 ## 一键全栈启动（推荐 · 2026-09-14 新增）
 
 重启电脑后只需要做两件事：**自己先打开 Docker Desktop**，然后**双击 `bridge/start-full-stack.cmd`**（也可拷到桌面建快捷方式）。脚本会按正确顺序把整条链路拉起来，最后打印一张自检表；浏览器会用带 token 的链接自动打开。

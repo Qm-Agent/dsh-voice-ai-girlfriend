@@ -69,5 +69,17 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(calls, ['first', 'second'])
 
 
+class DesktopLeaseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_lease_expires_and_can_be_released(self):
+        with patch.object(bridge.time, 'monotonic', return_value=100):
+            await bridge.desktop_lease(bridge.DesktopLeaseRequest(active=True))
+            self.assertTrue((await bridge.desktop_lease_status())['active'])
+        with patch.object(bridge.time, 'monotonic', return_value=107):
+            self.assertFalse((await bridge.desktop_lease_status())['active'])
+            await bridge.desktop_lease(bridge.DesktopLeaseRequest(active=True))
+            await bridge.desktop_lease(bridge.DesktopLeaseRequest(active=False))
+            self.assertFalse((await bridge.desktop_lease_status())['active'])
+
+
 if __name__ == '__main__':
     unittest.main()
