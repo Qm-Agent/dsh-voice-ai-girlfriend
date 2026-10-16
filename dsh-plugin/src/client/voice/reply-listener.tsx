@@ -86,10 +86,10 @@ export const ReplySpeakerMount = memo(function ReplySpeakerMount({
   // History replay protection: baseline anchor. On mount the conversation
   // snapshot can be EMPTY (session history loads asynchronously after a
   // restart), so a one-shot seed there would miss the history and every old
-  // reply would replay. Instead we wait until the first SETTLED assistant
-  // node arrives, then set the baseline to the current max anchor — nothing
-  // at or below it ever speaks. Live (running) nodes are never used for the
-  // baseline, so a fresh reply in a brand-new session still speaks.
+  // reply would replay. Seed settled history when it arrives, but a live
+  // running reply also freezes the baseline (at zero in a new session).
+  // Otherwise the first live reply becomes history when it settles and is
+  // never spoken.
   const baselineRef = useRef<number | null>(null)
   // Serial TTS fetch chain: sentence N+1's fetch starts after N's resolves
   // (playback drains independently through the speaker queue — pipelined).
@@ -188,25 +188,26 @@ export const ReplySpeakerMount = memo(function ReplySpeakerMount({
       return
     }
 
-    // First settled assistant node arrives: freeze the history baseline so
-    // pre-existing replies never replay (page load, session revisit, history
-    // pagination). Running nodes are live replies — they are NOT used here,
-    // so a fresh reply in a new session still speaks.
+    // Running replies freeze history without becoming part of it.
     if (baselineRef.current === null) {
       let maxAnchor = 0
       let hasSettled = false
+      let hasRunning = false
       for (const node of chatNodes(chat)) {
         if (node.kind !== 'assistant-step') continue
         const data = assistantData(node)
         if (data === undefined) continue
-        if (data.status === 'settled') hasSettled = true
-        if (node.anchorSeq > maxAnchor) maxAnchor = node.anchorSeq
+        if (data.status === 'running') hasRunning = true
+        if (data.status === 'settled' || data.status === 'interrupted') {
+          hasSettled = true
+          if (node.anchorSeq > maxAnchor) maxAnchor = node.anchorSeq
+        }
       }
-      if (hasSettled && maxAnchor > 0) {
+      if (hasSettled || hasRunning) {
         baselineRef.current = maxAnchor
         skipUntilRef.current = maxAnchor
       }
-      return
+      if (!hasRunning) return
     }
 
     if (dhMode) {

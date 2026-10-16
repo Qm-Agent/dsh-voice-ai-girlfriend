@@ -1,0 +1,20 @@
+services:
+  duix-avatar-gen-video:
+    image: guiji2025/duix.avatar@sha256:1970424d219cbb6aebc7566f069041f057ccad618a395139dce002e1fb25d5ed
+    container_name: duix-avatar-gen-video
+    restart: unless-stopped
+    volumes:
+      - ../.local/duix:/code/data
+    environment:
+      PYTORCH_CUDA_ALLOC_CONF: max_split_size_mb:512
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    shm_size: '8g'
+    ports:
+      - '127.0.0.1:9000:8383'
+    command: python /code/app_local.py

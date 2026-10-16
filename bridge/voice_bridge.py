@@ -1153,7 +1153,7 @@ async def _dh_run(item: dict) -> None:
             video_file="", video_url="", videos=[], total_segments=total,
             done_segments=0, progress=0,
         )
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(timeout=20, trust_env=False) as client:
             pending_synth: asyncio.Task | None = None
             for i, seg_text in enumerate(segments):
                 if code in _dh_discarded:
@@ -1385,8 +1385,10 @@ def _dh_ensure_worker() -> None:
 
 async def _dh_reachable(timeout: float = 3.0) -> bool:
     """DUIX 是否可达：GET /easy/query 探活（容器没起时立刻 False，不重试）。"""
+    # DUIX is a locally managed service; environment proxies can return 502
+    # even while the container is healthy. All DUIX clients connect directly.
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             resp = await client.get(f"{DH_DUIX_BASE}/easy/query", params={"code": "probe"})
             return resp.status_code < 500
     except Exception:  # noqa: BLE001
@@ -1485,7 +1487,7 @@ async def _dh_warmup() -> None:
             "chaofen": 0,
             "pn": 1,
         }
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(timeout=20, trust_env=False) as client:
             # 预热不写 _dh_state：直接提交 + 轮询，完成即删，失败静默。
             warm_fails = 0
             for _ in range(60):  # 最多等 5 分钟 busy 释放
