@@ -31,6 +31,7 @@ import { ownsVoiceOutput, useVoiceOutputOwner } from './output-owner.ts'
 import { readDigitalHuman } from '../DigitalHumanToggle.tsx'
 import type { VoiceInjected } from '../contract.ts'
 import css from './CompanionWindow.module.css'
+import { ActionLibrary } from './ActionLibrary.tsx'
 
 const WIDTH_KEY = 's2s.voice.companionW'
 const POS_KEY = 's2s.voice.companionPos'
@@ -244,7 +245,14 @@ export const CompanionWindow = memo(function CompanionWindow({ speaker, companio
   // Digital human: bridge task state + the video currently being played.
   const [dh, setDh] = useState<DhStatus | null>(null)
   const [dhPlaying, setDhPlaying] = useState(false)
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('dsh-voice:reply-state', {detail:
+      dhPlaying ? 'speaking' : dh?.state === 'tts' || dh?.state === 'generating' ? 'preparing' : 'idle'}))
+  }, [dhPlaying, dh?.state])
   const dhPlayingRef = useRef(false)
+  const dhStartingRef = useRef(false)
+  const dhStartVersion = useRef(0)
+  const avatarContinuity = useRef(false)
   const setDhPlayingBoth = useCallback((v: boolean) => {
     dhPlayingRef.current = v
     setDhPlaying(v)
@@ -268,6 +276,34 @@ export const CompanionWindow = memo(function CompanionWindow({ speaker, companio
 
   // Digital-human frame.
   const dhRef = useRef<HTMLVideoElement | null>(null)
+  const [previewAvatar, setPreviewAvatar] = useState('')
+  avatarContinuity.current = Boolean(previewAvatar)
+  const [previewReady, setPreviewReady] = useState(false)
+  const [previewError, setPreviewError] = useState(false)
+  const previewRef = useRef<HTMLVideoElement | null>(null)
+  useEffect(() => {
+    const video=previewRef.current
+    if (!video) return
+    if (previewReady && !dhPlaying && visible) void video.play().catch(() => {})
+    else video.pause()
+    if (previewReady || dhPlaying) { bgA.current?.pause(); bgB.current?.pause() }
+  }, [previewReady, dhPlaying, visible])
+  useEffect(() => { setPreviewReady(false); setPreviewError(false) }, [previewAvatar])
+  useEffect(() => {
+    let cancelled = false
+    let changed = false
+    void fetch(`${bridgeBase()}/api/persona/list`).then(r => r.json())
+      .then(s => { if (!cancelled && !changed) setPreviewAvatar(s.current?.avatar || '') })
+      .catch(() => {})
+    const onChange = (event: Event) => {
+      const detail = (event as CustomEvent<{kind: string; name: string}>).detail
+      if (detail?.kind !== 'avatar' && detail?.kind !== 'idle') return
+      changed = true
+      setPreviewAvatar(detail.kind === 'avatar' ? detail.name : '')
+    }
+    window.addEventListener('dsh-voice:persona', onChange)
+    return () => { cancelled = true; window.removeEventListener('dsh-voice:persona', onChange) }
+  }, [])
   const handledDhRef = useRef(new Set<string>())
   const waitingDhRef = useRef<{ code: string; at: number } | null>(null)
   const dhQueueRef = useRef<string[]>([])
@@ -503,12 +539,14 @@ export const CompanionWindow = memo(function CompanionWindow({ speaker, companio
     if (dhPlaying) hideTaskFrame()
   }, [dhPlaying, hideTaskFrame])
 
-  // One-second polling avoids adding up to four seconds after video completion.
+  // Poll quickly during generation/playback; keep idle polling inexpensive.
   useEffect(() => {
     let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
     const poll = async () => {
       const status = await dhStatus()
-      if (cancelled || status === null) return
+      if (cancelled) return
+      if (status === null) { timer = setTimeout(poll, 1000); return }
       setDh((prev) => {
         if (prev === null) return status
         if (
@@ -520,16 +558,17 @@ export const CompanionWindow = memo(function CompanionWindow({ speaker, companio
         return status
       })
       driveDh(status)
+      timer = setTimeout(poll, status.state === 'tts' || status.state === 'generating' ? 250 : 1000)
     }
     void poll()
-    const timer = window.setInterval(poll, 1000)
     return () => {
       cancelled = true
-      window.clearInterval(timer)
+      window.clearTimeout(timer)
     }
   }, [])
 
   const stopDh = useCallback(() => {
+    dhStartVersion.current++;dhStartingRef.current=false
     const vid = dhRef.current
     if (vid !== null) {
       vid.pause()
@@ -559,10 +598,27 @@ export const CompanionWindow = memo(function CompanionWindow({ speaker, companio
       setDhPlayingBoth(false)
       return
     }
-    vid.style.opacity = '1'
-    vid.src = next
-    void vid.play().catch(() => {})
-    setDhPlayingBoth(true)
+    if(dhStartingRef.current)return
+    if(!avatarContinuity.current){
+      vid.style.transition=VIDEO_STYLE.transition as string
+      vid.style.opacity = '1';vid.src = next
+      void vid.play().catch(() => {});setDhPlayingBoth(true)
+      return
+    }
+    // Start audio immediately; keep the resting layer until a decoded frame exists.
+    const version=++dhStartVersion.current
+    dhStartingRef.current=true
+    vid.style.transition='opacity 180ms ease'
+    vid.src=next
+    const reveal=()=>{
+      if(version!==dhStartVersion.current||!ownsVoiceOutput())return
+      dhStartingRef.current=false;vid.style.opacity='1';setDhPlayingBoth(true)
+    }
+    void vid.play().then(()=>{
+      if(version!==dhStartVersion.current)return
+      if(typeof vid.requestVideoFrameCallback==='function')vid.requestVideoFrameCallback(reveal)
+      else reveal()
+    }).catch(()=>{if(version===dhStartVersion.current)dhStartingRef.current=false})
   }, [setDhPlayingBoth])
 
   const driveDh = (status: DhStatus): void => {
@@ -636,7 +692,7 @@ export const CompanionWindow = memo(function CompanionWindow({ speaker, companio
         handledDhRef.current.add(code)
         waitingDhRef.current = null
       }
-      if (!dhPlayingRef.current && dhQueuePlayedRef.current < dhQueueRef.current.length) {
+      if (!dhPlayingRef.current && !dhStartingRef.current && dhQueuePlayedRef.current < dhQueueRef.current.length) {
         playNextDh()
       }
     }
@@ -662,14 +718,19 @@ export const CompanionWindow = memo(function CompanionWindow({ speaker, companio
     } else {
       setDhPlayingBoth(false)
       const vid = dhRef.current
-      if (vid !== null) vid.style.opacity = '0'
+      if (vid !== null && !avatarContinuity.current) vid.style.opacity = '0'
     }
   }, [playNextDh, setDhPlayingBoth])
 
   // ── Drag to reposition ────────────────────────────────────────────────────
   const beginMove = useCallback((clientX: number, clientY: number) => {
     if (moveRef.current !== null) return
-    const base = posRef.current ?? defaultPos(widthPx, heightPx)
+    const preferred = posRef.current ?? defaultPos(widthPx, heightPx)
+    // Start from the displayed (clamped) position, not an off-screen saved one.
+    const base = {
+      x: Math.max(4, Math.min(window.innerWidth - widthPx - 4, preferred.x)),
+      y: Math.max(4, Math.min(window.innerHeight - heightPx - 4, preferred.y)),
+    }
     moveRef.current = { startX: clientX, startY: clientY, base }
     const onMove = (move: PointerEvent) => {
       const m = moveRef.current
@@ -738,12 +799,9 @@ export const CompanionWindow = memo(function CompanionWindow({ speaker, companio
   useEffect(() => {
     const onResize = () => {
       if (posRef.current === null) return
-      const cl = {
-        x: Math.max(4, Math.min(window.innerWidth - widthPx - 4, posRef.current.x)),
-        y: Math.max(4, Math.min(window.innerHeight - heightPx - 4, posRef.current.y)),
-      }
-      posRef.current = cl
-      setPos(cl)
+      // Re-render the clamped position without overwriting the user's saved
+      // coordinates when switching through a narrow companion viewport.
+      setPos({ ...posRef.current })
     }
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
@@ -814,12 +872,21 @@ export const CompanionWindow = memo(function CompanionWindow({ speaker, companio
       {/* Foreground task/avatar frame (load on demand) */}
       <video ref={taskRef} style={VIDEO_STYLE} muted playsInline preload="metadata" draggable={false} onEnded={onTaskEnded} />
       {/* Digital-human frame (load on demand, carries the TTS audio) */}
+      {previewAvatar && <video ref={previewRef} key={previewAvatar} data-avatar-preview={previewAvatar}
+        src={`${bridgeBase()}/media/avatars/${encodeURIComponent(previewAvatar)}`}
+        style={{...VIDEO_STYLE, opacity: previewReady && !dhPlaying ? 1 : 0}}
+        muted loop playsInline preload="auto" draggable={false}
+        onLoadedData={() => setPreviewReady(true)} onError={() => { setPreviewReady(false); setPreviewError(true) }} />}
       <video ref={dhRef} style={VIDEO_STYLE} playsInline preload="metadata" draggable={false} onEnded={onDhEnded} />
+      <ActionLibrary avatar={previewAvatar} speaking={dhPlaying || speaking} preparing={dh?.state==='tts'||dh?.state==='generating'} visible={visible} speechVideo={dhRef} />
+      {previewAvatar && !dhPlaying && <div data-scene-warning={previewError ? 'true' : undefined} style={{...DH_HINT_STYLE, pointerEvents:'none'}}>
+        {previewError ? '形象预览加载失败，请重新选择' : previewReady ? `当前形象：${previewAvatar.replace(/\.mp4$/i, '')}` : '正在加载形象预览…'}
+      </div>}
       {/* 分段进度（左下角）：分段 TTS 逐段提交，显示「第 N/M 段」。
           旧的 dhCaption（右下角，显示桥接 message）已删——信息重复会重叠。 */}
       {readDigitalHuman() && dh !== null
         && (dhBusy || dhPlaying || dh.state === 'error' || dh.state === 'discarded') && (
-        <div style={DH_SEG_STYLE}>
+        <div data-scene-warning={dh.state === 'error' ? 'true' : undefined} style={DH_SEG_STYLE}>
           <span style={{ fontVariantNumeric: 'tabular-nums' }}>{dhSegText(dh)}</span>
           {dh.total_segments > 0 && (
             <span style={DH_SEG_BAR_STYLE}>
@@ -835,7 +902,7 @@ export const CompanionWindow = memo(function CompanionWindow({ speaker, companio
       )}
       {/* 语音总开关关着：整条管道都不提交，明确提示 */}
       {readDigitalHuman() && !readVoiceEnabled() && (
-        <div style={DH_HINT_STYLE}>语音总开关关着 · 数字人不会提交</div>
+        <div data-scene-warning="true" style={DH_HINT_STYLE}>语音总开关关着 · 数字人不会提交</div>
       )}
       {/* Resize handle (bottom-right corner) */}
       <div

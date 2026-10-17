@@ -173,6 +173,7 @@ else {
     win.show(); state(); await lease();
     heartbeat=setInterval(()=>void lease(),2000);
     await connect();
+    if(process.argv.includes('--all-avatar-continuity-test'))await require('./avatar-continuity-test.cjs')({win,view,root,bridge,show});
     if(selfTest) await checkNativeBehavior();
   }).catch(error=>{fs.writeFileSync(path.join(local,'error.log'),String(error.stack));app.quit();});
   app.on('before-quit',()=>{quitting=true;persist();clearInterval(heartbeat);globalShortcut.unregisterAll();void lease(false);view?.webContents.close();});

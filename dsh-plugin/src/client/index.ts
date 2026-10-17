@@ -87,6 +87,7 @@ export function apply(ctx: ClientContext): void {
       if (!result.ok) {
         throw new Error(`[ui-voice] prompt failed: ${result.error.code}: ${result.error.message}`)
       }
+      window.dispatchEvent(new CustomEvent('dsh-voice:submitted', {detail:{text}}))
     },
     speaker,
     companion,

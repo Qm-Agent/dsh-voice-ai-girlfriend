@@ -564,6 +564,11 @@ async def media_task_videos() -> dict:
     }
 
 
+# Curated, pre-rendered action clips. No generation on the response path.
+ACTION_LIBRARY_DIR = HERE.parent / "assets" / "actions"
+if ACTION_LIBRARY_DIR.is_dir():
+    app.mount("/media/actions", StaticFiles(directory=str(ACTION_LIBRARY_DIR)), name="media-actions")
+
 # Static mounts (Range-capable) for the companion window's <video> sources.
 # bg 用动态路由：文件从「当前待机组」目录读，切换组时 URL 不变、内容跟随。
 if TASK_VIDEOS_DIR.is_dir():
@@ -1253,6 +1258,13 @@ async def _dh_run(item: dict) -> None:
             await asyncio.gather(pending_synth, return_exceptions=True)
 
 
+def _dh_audio_minimum(samples: np.ndarray) -> np.ndarray:
+    # DUIX rejects clips shorter than one second. Keep speech unchanged.
+    if len(samples) < 16000:
+        return np.pad(samples, (0, 16800 - len(samples)))
+    return samples
+
+
 async def _dh_synth_segment(seg_text: str) -> Path:
     """合成一小段音频到 temp 目录，返回宿主路径。"""
     async with models.infer_lock:
@@ -1263,7 +1275,7 @@ async def _dh_synth_segment(seg_text: str) -> Path:
         samples = await asyncio.to_thread(_synthesize_full, handler, seg_text)
     ts = datetime.now().strftime("%Y%m%d%H%M%S%f")[:-3]
     wav_path = DH_TEMP_DIR / f"{ts}.wav"
-    wav_path.write_bytes(_pcm16_to_wav(samples))
+    wav_path.write_bytes(_pcm16_to_wav(_dh_audio_minimum(samples)))
     logger.info("DH synth: %.2fs audio -> %s", len(samples) / 16000.0, wav_path.name)
     return wav_path
 
@@ -1589,6 +1601,16 @@ def _voice_entry(name: str) -> dict:
     fallback = next(iter(PERSONAS.values()), {})
     p = PERSONAS.get(name, fallback)
     return {"name": name, "label": p.get("label", name), "current": name == _current_persona}
+
+
+@app.get("/media/avatars/{name}")
+async def avatar_preview(name: str):
+    from fastapi.responses import FileResponse
+    target = (DH_TEMP_DIR / name).resolve()
+    if (target.parent != DH_TEMP_DIR.resolve() or target.suffix.lower() != ".mp4"
+            or name.endswith(("-r.mp4", ".bak.mp4")) or not target.is_file()):
+        raise HTTPException(status_code=404, detail="Avatar not found")
+    return FileResponse(target, media_type="video/mp4")
 
 
 @app.get("/api/persona/list")

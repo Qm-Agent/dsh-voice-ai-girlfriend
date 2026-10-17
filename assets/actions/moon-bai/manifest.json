@@ -1,0 +1,38 @@
+{
+  "avatar": "moon_bai.mp4",
+  "name": "月白",
+  "nativeLandscape": false,
+  "sourceNote": "Repository demo clips, approximately 1024x960; square canvas preserves source framing. Not native HD landscape.",
+  "actions": {
+    "idle": {
+      "file": "idle.mp4",
+      "label": "自然待机",
+      "source": "assets\\bg-images\\bg56\\01 (1).mp4",
+      "duration": 5.063
+    },
+    "hair": {
+      "file": "hair.mp4",
+      "label": "拨头发",
+      "source": "assets\\bg-images\\bg56\\01 (12).mp4",
+      "duration": 5.625,
+      "transition": "0.24s entry/exit crossfade using the same neutral source"
+    },
+    "smile": {
+      "file": "smile.mp4",
+      "label": "微笑",
+      "source": "assets\\bg-images\\bg56\\01 (15).mp4",
+      "duration": 5.625,
+      "transition": "0.24s entry/exit crossfade using the same neutral source"
+    },
+    "cute": {
+      "file": "cute.mp4",
+      "label": "俏皮表情",
+      "source": "assets\\bg-images\\bg56\\idle_bored_1x1.mp4",
+      "duration": 5.584,
+      "transition": "0.24s entry/exit crossfade using the same neutral source"
+    }
+  },
+  "unavailable": {
+    "watermelon": "尚缺同一人物的吃西瓜动作视频"
+  }
+}
